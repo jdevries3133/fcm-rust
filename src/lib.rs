@@ -1,3 +1,4 @@
+#![allow(clippy::uninlined_format_args)]
 #![doc(html_root_url = "https://panicbit.github.io/fcm-rust/fcm/")]
 //! fcm
 //! ===
@@ -58,6 +59,7 @@
 //! # }
 //! ```
 
+mod auth;
 mod message;
 pub use crate::message::*;
 mod notification;

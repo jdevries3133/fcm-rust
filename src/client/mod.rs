@@ -19,6 +19,7 @@ impl Default for Client {
 
 impl Client {
     /// Get a new instance of Client.
+    #[allow(clippy::legacy_numeric_constants)]
     pub fn new() -> Client {
         let http_client = reqwest::ClientBuilder::new()
             .pool_max_idle_per_host(std::usize::MAX)
