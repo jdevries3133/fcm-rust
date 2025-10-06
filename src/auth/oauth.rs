@@ -1,7 +1,10 @@
 // TODO: disallow this again when finished
 #![allow(unused)]
 
-use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
+use base64::{
+    prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
+    Engine,
+};
 use chrono::{DateTime, Utc};
 pub use firebase_credentials::AdminSdkCredentials;
 use serde::Serialize;
@@ -40,11 +43,13 @@ fn jsonb64<T: Serialize>(val: T, err_msg: &'static str) -> OauthResult<String> {
 mod firebase_credentials {
 
     use aws_lc_rs::{
-        digest::{Digest, SHA256},
-        rand::SystemRandom,
-        signature::{KeyPair, UnparsedPublicKey, RSA_PKCS1_SHA256, RSA_PSS_SHA256},
+        digest::{Digest, SHA256}, hmac::HMAC_SHA256, rand::SystemRandom, signature::{KeyPair, UnparsedPublicKey, RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_SHA256, RSA_PSS_SHA256}
     };
-    use base64::{engine::DecodePaddingMode, prelude::BASE64_URL_SAFE_NO_PAD, Engine};
+    use base64::{
+        engine::DecodePaddingMode,
+        prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
+        Engine,
+    };
     use serde::Deserialize;
 
     use crate::auth::oauth::{jwt::JWTPendingSignature, OauthError, OauthErrorVariant, OauthResult};
@@ -118,7 +123,7 @@ mod firebase_credentials {
                 }
                 b64.push_str(line);
             }
-            BASE64_URL_SAFE_NO_PAD.decode(&b64).map_err(|e| OauthError {
+            BASE64_STANDARD.decode(&b64).map_err(|e| OauthError {
                 msg: format!("Could not decode base64 private key: {e}"),
                 variant: OauthErrorVariant::Crypto,
             })
@@ -157,7 +162,7 @@ mod firebase_credentials {
         fn fake_privkey() -> String {
             let kp = KeyPair::generate(KeySize::Rsa2048).unwrap();
             let der = kp.as_der().unwrap();
-            let b64 = BASE64_URL_SAFE_NO_PAD.encode(&der.as_ref());
+            let b64 = BASE64_STANDARD.encode(&der.as_ref());
             let mut pem = String::new();
             pem.push_str("-----BEGIN PRIVATE KEY-----\n");
             for (idx, char) in b64.chars().enumerate() {
