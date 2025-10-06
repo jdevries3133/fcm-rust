@@ -1,3 +1,7 @@
+//! [Google's guide for getting an access token as a service-account not using
+//! an official client
+//! library.](https://developers.google.com/identity/protocols/oauth2/service-account#httprest_1).
+
 // TODO: disallow this again when finished
 #![allow(unused)]
 
