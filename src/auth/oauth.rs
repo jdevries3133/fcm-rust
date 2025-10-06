@@ -9,9 +9,12 @@ use base64::{
     prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
     Engine,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 pub use firebase_credentials::AdminSdkCredentials;
-use serde::Serialize;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+
+use crate::auth::oauth::jwt::{JWTClaims, JWTHeader, JWTPendingSignature, Jwt};
 
 #[derive(Debug)]
 pub struct OauthError {
@@ -21,8 +24,10 @@ pub struct OauthError {
 
 #[derive(Debug)]
 enum OauthErrorVariant {
-    JsonEncode,
     Crypto,
+    Serde,
+    Http,
+    Authorization,
 }
 
 type OauthResult<Ok> = Result<Ok, OauthError>;
@@ -32,14 +37,63 @@ pub struct AccessToken {
     pub expiry_time: DateTime<Utc>,
 }
 
-pub async fn authenticate(credentials: &AdminSdkCredentials) -> OauthResult<AccessToken> {
-    todo!()
+#[derive(Serialize)]
+struct Payload<'a> {
+    grant_type: &'a str,
+    assertion: &'a str,
+}
+
+#[derive(Deserialize)]
+struct Response {
+    access_token: String,
+    expires_in: i64,
+    token_type: String,
+}
+
+pub async fn authenticate(client: &Client, credentials: &AdminSdkCredentials) -> OauthResult<AccessToken> {
+    let jwt_unsigned = JWTPendingSignature::new(&JWTHeader::new(&credentials), &JWTClaims::new(&credentials)).unwrap();
+    let sig = credentials.sign(&jwt_unsigned).unwrap();
+    let jwt = Jwt {
+        sig,
+        pending: jwt_unsigned,
+    };
+    let payload = Payload {
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion: &jwt.serialize(),
+    };
+    let body_raw = serde_urlencoded::to_string(&payload).map_err(|e| OauthError {
+        msg: format!("while serializing authorization request payload: {e}"),
+        variant: OauthErrorVariant::Serde,
+    })?;
+    let req = client
+        .post("https://oauth2.googleapis.com/token")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body_raw);
+    let response = req.send().await.map_err(|e| OauthError {
+        msg: format!("error response from authorization server: {e}"),
+        variant: OauthErrorVariant::Http,
+    })?;
+    let response: Response = response.json().await.map_err(|e| OauthError {
+        msg: format!("while deserializing JSON response from authorization server: {e}"),
+        variant: OauthErrorVariant::Serde,
+    })?;
+
+    match response.token_type.as_ref() {
+        "Bearer" => Ok(AccessToken {
+            token: response.access_token,
+            expiry_time: Utc::now() + Duration::seconds(response.expires_in),
+        }),
+        token_type => Err(OauthError {
+            msg: format!("unexpected token type: {token_type}"),
+            variant: OauthErrorVariant::Authorization,
+        }),
+    }
 }
 
 fn jsonb64<T: Serialize>(val: T, err_msg: &'static str) -> OauthResult<String> {
     let json = serde_json::to_string(&val).map_err(|e| OauthError {
         msg: format!("{err_msg}: {e}"),
-        variant: OauthErrorVariant::JsonEncode,
+        variant: OauthErrorVariant::Serde,
     })?;
     Ok(BASE64_URL_SAFE_NO_PAD.encode(&json))
 }
@@ -47,7 +101,10 @@ fn jsonb64<T: Serialize>(val: T, err_msg: &'static str) -> OauthResult<String> {
 mod firebase_credentials {
 
     use aws_lc_rs::{
-        digest::{Digest, SHA256}, hmac::HMAC_SHA256, rand::SystemRandom, signature::{KeyPair, UnparsedPublicKey, RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_SHA256, RSA_PSS_SHA256}
+        digest::{Digest, SHA256},
+        hmac::HMAC_SHA256,
+        rand::SystemRandom,
+        signature::{KeyPair, UnparsedPublicKey, RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_SHA256, RSA_PSS_SHA256},
     };
     use base64::{
         engine::DecodePaddingMode,
@@ -93,15 +150,15 @@ mod firebase_credentials {
             // length.
             let mut buf = vec![0; key_pair.public_modulus_len()];
 
-            let mut hash = aws_lc_rs::digest::Context::new(&SHA256);
-            hash.update(jwt.0.as_bytes());
-            let digest = hash.finish();
+            // let mut hash = aws_lc_rs::digest::Context::new(&SHA256);
+            // hash.update(jwt.0.as_bytes());
+            // let digest = hash.finish();
 
             key_pair
                 .sign(
                     &RSA_PKCS1_SHA256,
                     &SystemRandom::new(),
-                    digest.as_ref(),
+                    jwt.0.as_bytes(),
                     buf.as_mut_slice(),
                 )
                 .map_err(|e| OauthError {
@@ -272,6 +329,8 @@ mod jwt {
 
 #[cfg(test)]
 mod test {
+    use std::future::IntoFuture;
+
     use super::*;
     use crate::auth::oauth::jwt::Jwt;
     use aws_lc_rs::{
@@ -301,9 +360,9 @@ mod test {
         }
 
         let header_claims = format!("{}.{}", parts[0], parts[1]);
-        let mut hash = aws_lc_rs::digest::Context::new(&SHA256);
-        hash.update(header_claims.as_bytes());
-        let digest = hash.finish();
+        // let mut hash = aws_lc_rs::digest::Context::new(&SHA256);
+        // hash.update(header_claims.as_bytes());
+        // let digest = hash.finish();
         let signature = BASE64_URL_SAFE_NO_PAD
             .decode(parts[2])
             .map_err(|e| OauthError {
@@ -323,6 +382,18 @@ mod test {
         let public_key_der = key_pair.public_key().as_ref().to_vec();
         let public_key = UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, public_key_der);
 
-        public_key.verify(digest.as_ref(), &signature).expect("verifies");
+        public_key
+            .verify(header_claims.as_bytes(), &signature)
+            .expect("verifies");
     }
+
+    // #[tokio::test]
+    // async fn test_tmp() {
+    //     let creds: AdminSdkCredentials = serde_json::from_slice(
+    //         &std::fs::read("../../Downloads/remind-reader-firebase-adminsdk-fbsvc-f8aa958c9c.json").unwrap(),
+    //     )
+    //     .unwrap();
+    //     let client = reqwest::Client::new();
+    //     authenticate(&client, &creds).await.unwrap();
+    // }
 }
